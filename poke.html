@@ -90,7 +90,7 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
 <body>
 
 <header>
-  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v4.3.0</span></div>
+  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v4.4.0</span></div>
   <div class="header-right">
     <span>コレクション: <strong id="total">0</strong>枚</span>
     <button onclick="toggleSettings()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem">⚙️</button>
@@ -150,6 +150,11 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
     <div class="coll-header">
       <div class="coll-title">MY COLLECTION</div>
       <button class="btn-refresh" onclick="loadCollection()">↻ 更新</button>
+    </div>
+    <div id="total-value" style="background:linear-gradient(135deg,rgba(247,201,72,0.12),rgba(224,92,42,0.12));border:1px solid rgba(247,201,72,0.3);border-radius:10px;padding:12px 16px;margin-bottom:14px;display:none">
+      <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">💰 コレクション総額</div>
+      <div id="total-value-amount" style="font-family:'Orbitron',monospace;font-size:1.4rem;font-weight:700;color:var(--accent)">¥0</div>
+      <div id="total-value-note" style="font-size:0.65rem;color:var(--muted);margin-top:3px"></div>
     </div>
     <div id="card-grid" class="card-grid"><div class="empty"><div class="ei">📦</div><p>コレクションタブで読み込みます</p></div></div>
   </div>
@@ -518,6 +523,17 @@ async function loadCollection() {
     }
     collection = cards;
     document.getElementById('total').textContent = cards.length;
+    // 総額計算
+    const totalValue = cards.reduce((sum, c) => sum + (parseInt(c.price) || 0), 0);
+    const pricedCards = cards.filter(c => parseInt(c.price) > 0).length;
+    const totalBox = document.getElementById('total-value');
+    if (cards.length > 0) {
+      totalBox.style.display = 'block';
+      document.getElementById('total-value-amount').textContent = '¥' + totalValue.toLocaleString();
+      document.getElementById('total-value-note').textContent = `${pricedCards}/${cards.length}枚に価格情報あり`;
+    } else {
+      totalBox.style.display = 'none';
+    }
     renderCards(cards, grid);
   } catch(e) {
     grid.innerHTML = `<div class="empty"><div class="ei">⚠️</div><p>${e.message}</p></div>`;
