@@ -90,7 +90,7 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
 <body>
 
 <header>
-  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v4.1.0</span></div>
+  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v4.2.0</span></div>
   <div class="header-right">
     <span>コレクション: <strong id="total">0</strong>枚</span>
     <button onclick="toggleSettings()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem">⚙️</button>
@@ -237,6 +237,52 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 });
 
+// ===== モデルフォールバック機能 =====
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-flash-latest'
+];
+
+async function callGeminiWithFallback(apiKey, body, maxRetries = 2) {
+  let lastError = null;
+  for (const model of GEMINI_MODELS) {
+    for (let retry = 0; retry <= maxRetries; retry++) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          }
+        );
+        if (res.ok) {
+          console.log('Success with model: ' + model);
+          return await res.json();
+        }
+        const errText = await res.text();
+        lastError = new Error('API ' + res.status + ': ' + errText.slice(0, 200));
+        // 503/429は別モデルを試す、それ以外は即throw
+        if (res.status === 503 || res.status === 429) {
+          if (retry < maxRetries) {
+            await new Promise(r => setTimeout(r, 1500 * (retry + 1)));
+            continue;
+          }
+          break; // 次のモデルへ
+        } else {
+          throw lastError;
+        }
+      } catch(e) {
+        lastError = e;
+        if (retry >= maxRetries) break;
+      }
+    }
+  }
+  throw lastError || new Error('全モデルで失敗しました');
+}
+
 async function analyze() {
   if (!selectedFile || !selectedB64) return;
   const apiKey = cfg('gemini');
@@ -248,22 +294,13 @@ async function analyze() {
   try {
     const mediaType = selectedFile.type || 'image/jpeg';
     const prompt = 'このポケモンカードを分析し、以下のJSON形式のみで返答してください。マークダウンや説明文は不要です。\n{"name":"ポケモン名","type":"fire/water/grass/electric/psychic/fighting/dark/dragon/steel/normal/colorlessのいずれか","hp":"HP数値","rarity":"レアリティ","set":"収録セット名","number":"カード番号","notes":"特徴50文字以内"}';
-    const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + apiKey,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [
-            { inline_data: { mime_type: mediaType, data: selectedB64 } },
-            { text: prompt }
-          ]}],
-          generationConfig: { maxOutputTokens: 2048, temperature: 0.1, responseMimeType: 'application/json' }
-        })
-      }
-    );
-    if (!res.ok) { const e = await res.json(); throw new Error('API ' + res.status + ': ' + (e.error?.message || '')); }
-    const data = await res.json();
+    const data = await callGeminiWithFallback(apiKey, {
+      contents: [{ parts: [
+        { inline_data: { mime_type: mediaType, data: selectedB64 } },
+        { text: prompt }
+      ]}],
+      generationConfig: { maxOutputTokens: 2048, temperature: 0.1, responseMimeType: 'application/json' }
+    });
     const raw = (data.candidates?.[0]?.content?.parts || []).map(p => p.text||'').join('');
     if (!raw) throw new Error('AIからの応答が空でした');
     let card;
@@ -310,20 +347,12 @@ async function searchPrice(card) {
 {"price":中央値の日本円整数(数値のみ・不明なら0),"note":"参考にしたサイト名や価格帯の説明を50文字以内"}`;
 
   try {
-    const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + apiKey,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          tools: [{ google_search: {} }],
-          generationConfig: { maxOutputTokens: 1024, temperature: 0.2 }
-        })
-      }
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = await callGeminiWithFallback(apiKey, {
+      contents: [{ parts: [{ text: prompt }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: { maxOutputTokens: 1024, temperature: 0.2 }
+    });
+    if (!data) return null;
     const raw = (data.candidates?.[0]?.content?.parts || []).map(p => p.text||'').join('');
     if (!raw) return null;
     let parsed;
