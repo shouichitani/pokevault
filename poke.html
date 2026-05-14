@@ -90,7 +90,7 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
 <body>
 
 <header>
-  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v4.2.0</span></div>
+  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v4.3.0</span></div>
   <div class="header-right">
     <span>コレクション: <strong id="total">0</strong>枚</span>
     <button onclick="toggleSettings()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem">⚙️</button>
@@ -340,32 +340,54 @@ async function analyze() {
 // ===== 価格検索（Google Search Grounding） =====
 async function searchPrice(card) {
   const apiKey = cfg('gemini');
-  if (!apiKey || !card.name) return null;
+  if (!apiKey || !card.name) return { price: 0, note: 'API Key未設定' };
   const query = `${card.name} ${card.rarity||''} ${card.number||''} ${card.set||''}`.trim();
-  const prompt = `「${query}」というポケモンカードの現在の売却参考価格を、メルカリ、カードラッシュ、駿河屋、トレーディングカードショップなどの複数サイトで検索して調べてください。
-以下のJSON形式のみで返答してください（マークダウン不要）:
-{"price":中央値の日本円整数(数値のみ・不明なら0),"note":"参考にしたサイト名や価格帯の説明を50文字以内"}`;
+  const prompt = `「${query}」というポケモンカードの現在のフリマアプリ・カードショップでの売却参考価格を、メルカリ、カードラッシュ、駿河屋、ヤフオクなどで検索して教えてください。
+最後に必ず以下の形式の1行を含めてください（他は自由形式でOK）:
+PRICE_RESULT: 中央値の整数(円),参考サイト名や価格帯の補足30文字以内
+例: PRICE_RESULT: 1500,メルカリで1200-1800円`;
 
-  try {
-    const data = await callGeminiWithFallback(apiKey, {
-      contents: [{ parts: [{ text: prompt }] }],
-      tools: [{ google_search: {} }],
-      generationConfig: { maxOutputTokens: 1024, temperature: 0.2 }
-    });
-    if (!data) return null;
-    const raw = (data.candidates?.[0]?.content?.parts || []).map(p => p.text||'').join('');
-    if (!raw) return null;
-    let parsed;
-    try { parsed = JSON.parse(raw); }
-    catch(e) {
-      const s = raw.indexOf('{'), end = raw.lastIndexOf('}');
-      if (s > -1 && end > s) parsed = JSON.parse(raw.slice(s, end+1));
-      else return null;
+  // 検索専用にgemini-2.5-flashを直接使う（フォールバックなし、エラー詳細を返す）
+  const models = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash'];
+  let lastErr = '';
+  for (const model of models) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            tools: [{ google_search: {} }],
+            generationConfig: { temperature: 0.3 }
+          })
+        }
+      );
+      if (!res.ok) {
+        const errText = await res.text();
+        lastErr = `${model}: ${res.status} ${errText.slice(0, 100)}`;
+        continue;
+      }
+      const data = await res.json();
+      const raw = (data.candidates?.[0]?.content?.parts || []).map(p => p.text||'').join('');
+      if (!raw) { lastErr = `${model}: 空応答`; continue; }
+      // PRICE_RESULT: 1500,メルカリ... の形式を抽出
+      const m = raw.match(/PRICE_RESULT:\s*(\d+)\s*,\s*(.+?)(?:\n|$)/);
+      if (m) {
+        return { price: parseInt(m[1]) || 0, note: m[2].trim().slice(0, 60) };
+      }
+      // 数値だけでも抽出を試みる
+      const numMatch = raw.match(/(\d{2,7})\s*円/);
+      if (numMatch) {
+        return { price: parseInt(numMatch[1]), note: raw.slice(0, 60).replace(/\n/g, ' ') };
+      }
+      lastErr = `${model}: 価格抽出失敗 (${raw.slice(0,60)})`;
+    } catch(e) {
+      lastErr = `${model}: ${e.message}`;
     }
-    return { price: parseInt(parsed.price) || 0, note: parsed.note || '' };
-  } catch(e) {
-    return null;
   }
+  return { price: 0, note: lastErr || '取得失敗' };
 }
 
 function showResult(c) {
