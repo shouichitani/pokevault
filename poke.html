@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -95,7 +94,7 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
 <body>
 
 <header>
-  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v4.5.0</span></div>
+  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v5.0.0</span></div>
   <div class="header-right">
     <span>コレクション: <strong id="total">0</strong>枚</span>
     <button onclick="toggleSettings()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem">⚙️</button>
@@ -108,9 +107,21 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
     <input type="password" id="s-gemini" placeholder="AIza...">
   </div>
   <div class="field">
-    <label>Dropbox アクセストークン<a href="https://www.dropbox.com/developers/apps" target="_blank" style="color:var(--accent);font-size:0.65rem;margin-left:6px">→ 取得</a></label>
-    <input type="password" id="s-dropbox" placeholder="sl.u.AAAA...">
-    <div class="help-text">Dropbox > Apps > PokeVaultフォルダに保存されます</div>
+    <label>Dropbox App Key<a href="https://www.dropbox.com/developers/apps" target="_blank" style="color:var(--accent);font-size:0.65rem;margin-left:6px">→ アプリ設定</a></label>
+    <input type="text" id="s-dbx-key" placeholder="App keyを入力">
+  </div>
+  <div class="field">
+    <label>Dropbox App Secret</label>
+    <input type="password" id="s-dbx-secret" placeholder="App secretを入力">
+  </div>
+  <div class="field" id="dbx-auth-field" style="display:none">
+    <label>Dropbox 認証コード</label>
+    <input type="text" id="s-dbx-code" placeholder="認証画面で取得したコード">
+    <button onclick="completeDropboxAuth()" style="width:100%;padding:8px;background:var(--blue);color:#fff;border:none;border-radius:6px;margin-top:6px;font-weight:700;cursor:pointer;font-family:inherit;font-size:0.8rem">✅ 認証コードを使ってトークン取得</button>
+  </div>
+  <div class="field">
+    <button onclick="startDropboxAuth()" style="width:100%;padding:10px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-family:inherit;font-size:0.85rem">🔗 Dropbox連携を開始</button>
+    <div class="help-text" id="dbx-status">未連携</div>
   </div>
   <button class="btn-save" onclick="saveSettings()">💾 保存</button>
   <div id="s-msg" class="msg"></div>
@@ -198,16 +209,119 @@ let selectedFile = null, selectedB64 = null, analyzedCard = null, collection = [
 const TL = {fire:'炎',water:'水',grass:'草',electric:'雷',psychic:'超',fighting:'闘',dark:'悪',dragon:'竜',steel:'鋼',normal:'無',colorless:'無'};
 const DBX_API = 'https://api.dropboxapi.com/2';
 const DBX_CONTENT = 'https://content.dropboxapi.com/2';
+const DBX_AUTH = 'https://api.dropboxapi.com/oauth2/token';
+
+// ===== Dropbox OAuth 認証フロー =====
+function startDropboxAuth() {
+  const appKey = document.getElementById('s-dbx-key').value.trim();
+  if (!appKey) {
+    showMsg('s-msg', '⚠️ App Keyを先に入力してください', 'err');
+    return;
+  }
+  localStorage.setItem('pv_dbx-key', appKey);
+  // App Secretも一応保存
+  const secret = document.getElementById('s-dbx-secret').value.trim();
+  if (secret) localStorage.setItem('pv_dbx-secret', secret);
+  // 認証画面を新規タブで開く
+  const authUrl = `https://www.dropbox.com/oauth2/authorize?client_id=${appKey}&response_type=code&token_access_type=offline`;
+  window.open(authUrl, '_blank');
+  // 認証コード入力フィールドを表示
+  document.getElementById('dbx-auth-field').style.display = 'block';
+  showMsg('s-msg', '📋 認証画面でコードを取得して下の欄に貼り付けてください', 'info');
+}
+
+async function completeDropboxAuth() {
+  const appKey = cfg('dbx-key');
+  const appSecret = cfg('dbx-secret');
+  const code = document.getElementById('s-dbx-code').value.trim();
+  if (!appKey || !appSecret || !code) {
+    showMsg('s-msg', '⚠️ App Key, App Secret, 認証コードが必要です', 'err');
+    return;
+  }
+  try {
+    const params = new URLSearchParams();
+    params.append('code', code);
+    params.append('grant_type', 'authorization_code');
+    params.append('client_id', appKey);
+    params.append('client_secret', appSecret);
+    const res = await fetch(DBX_AUTH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(res.status + ': ' + err.slice(0, 200));
+    }
+    const data = await res.json();
+    localStorage.setItem('pv_dbx-refresh', data.refresh_token);
+    localStorage.setItem('pv_dbx-access', data.access_token);
+    localStorage.setItem('pv_dbx-expires', String(Date.now() + (data.expires_in || 14400) * 1000));
+    showMsg('s-msg', '✅ Dropbox連携が完了しました！', 'ok');
+    document.getElementById('dbx-auth-field').style.display = 'none';
+    document.getElementById('s-dbx-code').value = '';
+    updateDbxStatus();
+  } catch(e) {
+    showMsg('s-msg', '❌ 認証失敗: ' + e.message, 'err');
+  }
+}
+
+// アクセストークンを取得（必要なら自動更新）
+async function getDbxAccessToken() {
+  const refresh = localStorage.getItem('pv_dbx-refresh');
+  if (!refresh) throw new Error('Dropbox未連携です。設定から連携してください');
+  const expires = parseInt(localStorage.getItem('pv_dbx-expires') || '0');
+  const access = localStorage.getItem('pv_dbx-access');
+  // 期限まで5分以上ある場合はそのまま使う
+  if (access && expires > Date.now() + 5*60*1000) {
+    return access;
+  }
+  // リフレッシュ
+  const appKey = cfg('dbx-key');
+  const appSecret = cfg('dbx-secret');
+  const params = new URLSearchParams();
+  params.append('refresh_token', refresh);
+  params.append('grant_type', 'refresh_token');
+  params.append('client_id', appKey);
+  params.append('client_secret', appSecret);
+  const res = await fetch(DBX_AUTH, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error('トークン更新失敗: ' + res.status + ' ' + err.slice(0, 150));
+  }
+  const data = await res.json();
+  localStorage.setItem('pv_dbx-access', data.access_token);
+  localStorage.setItem('pv_dbx-expires', String(Date.now() + (data.expires_in || 14400) * 1000));
+  return data.access_token;
+}
 
 function loadSettings() {
-  ['gemini','dropbox'].forEach(k => {
+  const fields = {gemini:'s-gemini', 'dbx-key':'s-dbx-key', 'dbx-secret':'s-dbx-secret'};
+  Object.entries(fields).forEach(([k, id]) => {
     const v = localStorage.getItem('pv_'+k);
-    if (v) document.getElementById('s-'+k).value = v;
+    if (v && document.getElementById(id)) document.getElementById(id).value = v;
   });
+  updateDbxStatus();
 }
 function saveSettings() {
-  ['gemini','dropbox'].forEach(k => localStorage.setItem('pv_'+k, document.getElementById('s-'+k).value));
+  localStorage.setItem('pv_gemini', document.getElementById('s-gemini').value);
+  localStorage.setItem('pv_dbx-key', document.getElementById('s-dbx-key').value);
+  localStorage.setItem('pv_dbx-secret', document.getElementById('s-dbx-secret').value);
   showMsg('s-msg', '✅ 保存しました', 'ok');
+  updateDbxStatus();
+}
+function updateDbxStatus() {
+  const refreshToken = localStorage.getItem('pv_dbx-refresh');
+  const statusEl = document.getElementById('dbx-status');
+  if (statusEl) {
+    statusEl.innerHTML = refreshToken
+      ? '<span style="color:var(--green)">✅ 連携済み（自動更新）</span>'
+      : '<span style="color:var(--muted)">未連携 - 上のボタンをタップして開始</span>';
+  }
 }
 function cfg(k) { return localStorage.getItem('pv_'+k) || ''; }
 function toggleSettings() { document.getElementById('settings-panel').classList.toggle('open'); }
@@ -579,8 +693,7 @@ function showResult(c) {
 
 // ===== DROPBOX API =====
 async function dbxUpload(path, content) {
-  const token = cfg('dropbox');
-  if (!token) throw new Error('Dropbox トークンが未設定です');
+  const token = await getDbxAccessToken();
   const res = await fetch(DBX_CONTENT + '/files/upload', {
     method: 'POST',
     headers: {
@@ -598,7 +711,7 @@ async function dbxUpload(path, content) {
 }
 
 async function dbxDownload(path) {
-  const token = cfg('dropbox');
+  const token = await getDbxAccessToken();
   const res = await fetch(DBX_CONTENT + '/files/download', {
     method: 'POST',
     headers: {
@@ -610,8 +723,7 @@ async function dbxDownload(path) {
 }
 
 async function dbxList() {
-  const token = cfg('dropbox');
-  if (!token) throw new Error('Dropbox トークンが未設定です');
+  const token = await getDbxAccessToken();
   const res = await fetch(DBX_API + '/files/list_folder', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -626,7 +738,7 @@ async function dbxList() {
 }
 
 async function dbxDelete(path) {
-  const token = cfg('dropbox');
+  const token = await getDbxAccessToken();
   await fetch(DBX_API + '/files/delete_v2', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -635,7 +747,7 @@ async function dbxDelete(path) {
 }
 
 async function dbxGetTempLink(path) {
-  const token = cfg('dropbox');
+  const token = await getDbxAccessToken();
   const res = await fetch(DBX_API + '/files/get_temporary_link', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -762,6 +874,5 @@ function showMsg(id, text, type) { const el=document.getElementById(id); el.text
 
 loadSettings();
 </script>
-
 </body>
 </html>
