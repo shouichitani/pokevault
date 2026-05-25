@@ -94,7 +94,7 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
 <body>
 
 <header>
-  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v5.0.0</span></div>
+  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v5.0.1</span></div>
   <div class="header-right">
     <span>コレクション: <strong id="total">0</strong>枚</span>
     <button onclick="toggleSettings()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem">⚙️</button>
@@ -448,7 +448,7 @@ async function analyze() {
   showMsg('scan-msg', '🔍 Gemini AIで解析中...', 'info');
   try {
     const mediaType = selectedFile.type || 'image/jpeg';
-    const prompt = 'このポケモンカードを分析し、以下のJSON形式のみで返答してください。マークダウンや説明文は不要です。\n{"name":"ポケモン名","type":"fire/water/grass/electric/psychic/fighting/dark/dragon/steel/normal/colorlessのいずれか","hp":"HP数値","rarity":"レアリティ","set":"収録セット名","number":"カード番号","notes":"特徴50文字以内"}';
+    const prompt = 'このポケモンカードを分析してください。返答は必ずJSONオブジェクトのみで、説明文・マークダウン・コードブロック記号は一切含めないでください。\n出力形式: {"name":"ポケモン名","type":"fire|water|grass|electric|psychic|fighting|dark|dragon|steel|normal|colorlessのいずれか1つ","hp":"HP数値の文字列","rarity":"レアリティ","set":"収録セット名","number":"カード番号","notes":"特徴を50文字以内で"}';
     const data = await callGeminiWithFallback(apiKey, {
       contents: [{ parts: [
         { inline_data: { mime_type: mediaType, data: selectedB64 } },
@@ -459,11 +459,27 @@ async function analyze() {
     const raw = (data.candidates?.[0]?.content?.parts || []).map(p => p.text||'').join('');
     if (!raw) throw new Error('AIからの応答が空でした');
     let card;
+    // 1. そのままJSON.parse
     try { card = JSON.parse(raw); }
-    catch(e) {
+    catch(e1) {
+      // 2. {...}部分を抽出
       const s = raw.indexOf('{'), end = raw.lastIndexOf('}');
-      if (s > -1 && end > s) card = JSON.parse(raw.slice(s, end+1));
-      else throw new Error('JSON解析失敗: ' + raw.slice(0,100));
+      if (s > -1 && end > s) {
+        try { card = JSON.parse(raw.slice(s, end+1)); }
+        catch(e2) {
+          // 3. ```json ... ``` ブロックを除去してから再試行
+          let cleaned = raw.replace(/```json\s*/g, '').replace(/```/g, '').trim();
+          const s2 = cleaned.indexOf('{'), e2x = cleaned.lastIndexOf('}');
+          if (s2 > -1 && e2x > s2) {
+            try { card = JSON.parse(cleaned.slice(s2, e2x+1)); }
+            catch(e3) { throw new Error('JSON解析失敗。AI応答: ' + raw.slice(0,150)); }
+          } else {
+            throw new Error('JSON形式が見つからない。AI応答: ' + raw.slice(0,150));
+          }
+        }
+      } else {
+        throw new Error('JSON形式が見つからない。AI応答: ' + raw.slice(0,150));
+      }
     }
     analyzedCard = { ...card, imageData: selectedB64, imageMime: mediaType, registeredAt: new Date().toISOString() };
     showResult(card);
@@ -496,7 +512,7 @@ async function analyze() {
 // ===== 単一カード解析（内部用） =====
 async function analyzeOneCard(file, b64, mediaType) {
   const apiKey = cfg('gemini');
-  const prompt = 'このポケモンカードを分析し、以下のJSON形式のみで返答してください。マークダウンや説明文は不要です。\n{"name":"ポケモン名","type":"fire/water/grass/electric/psychic/fighting/dark/dragon/steel/normal/colorlessのいずれか","hp":"HP数値","rarity":"レアリティ","set":"収録セット名","number":"カード番号","notes":"特徴50文字以内"}';
+  const prompt = 'このポケモンカードを分析してください。返答は必ずJSONオブジェクトのみで、説明文・マークダウン・コードブロック記号は一切含めないでください。\n出力形式: {"name":"ポケモン名","type":"fire|water|grass|electric|psychic|fighting|dark|dragon|steel|normal|colorlessのいずれか1つ","hp":"HP数値の文字列","rarity":"レアリティ","set":"収録セット名","number":"カード番号","notes":"特徴を50文字以内で"}';
   const data = await callGeminiWithFallback(apiKey, {
     contents: [{ parts: [
       { inline_data: { mime_type: mediaType, data: b64 } },
@@ -508,10 +524,19 @@ async function analyzeOneCard(file, b64, mediaType) {
   if (!raw) throw new Error('AI応答が空');
   let card;
   try { card = JSON.parse(raw); }
-  catch(e) {
+  catch(e1) {
     const s = raw.indexOf('{'), end = raw.lastIndexOf('}');
-    if (s > -1 && end > s) card = JSON.parse(raw.slice(s, end+1));
-    else throw new Error('JSON解析失敗');
+    if (s > -1 && end > s) {
+      try { card = JSON.parse(raw.slice(s, end+1)); }
+      catch(e2) {
+        let cleaned = raw.replace(/```json\s*/g, '').replace(/```/g, '').trim();
+        const s2 = cleaned.indexOf('{'), e2x = cleaned.lastIndexOf('}');
+        if (s2 > -1 && e2x > s2) {
+          try { card = JSON.parse(cleaned.slice(s2, e2x+1)); }
+          catch(e3) { throw new Error('JSON解析失敗'); }
+        } else throw new Error('JSON形式が見つからない');
+      }
+    } else throw new Error('JSON形式が見つからない');
   }
   return card;
 }
