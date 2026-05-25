@@ -94,7 +94,7 @@ main { padding: 16px; max-width: 600px; margin: 0 auto; }
 <body>
 
 <header>
-  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v5.0.1</span></div>
+  <div class="logo">⚡ POKEVAULT <span style="font-size:0.55rem;color:var(--muted);letter-spacing:1px;-webkit-text-fill-color:var(--muted)">v5.0.2</span></div>
   <div class="header-right">
     <span>コレクション: <strong id="total">0</strong>枚</span>
     <button onclick="toggleSettings()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem">⚙️</button>
@@ -388,6 +388,31 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 });
 
+// ===== JSON修復関数（日本語の引用符など破損対応） =====
+function tryParseJsonLoose(raw) {
+  // 試行1: そのまま
+  try { return JSON.parse(raw); } catch(e) {}
+  // 試行2: {...}部分のみ
+  const s = raw.indexOf('{'), end = raw.lastIndexOf('}');
+  if (s < 0 || end <= s) return null;
+  let body = raw.slice(s, end+1);
+  try { return JSON.parse(body); } catch(e) {}
+  // 試行3: マークダウン除去
+  body = body.replace(/```json\s*/g, '').replace(/```/g, '');
+  try { return JSON.parse(body); } catch(e) {}
+  // 試行4: 各キーの値を正規表現で個別抽出（破損JSONからの救出）
+  const keys = ['name','type','hp','rarity','set','number','notes','price'];
+  const result = {};
+  for (const key of keys) {
+    // "key":"value" のパターン（値内の "" は許容しない）
+    const re = new RegExp('"' + key + '"\\s*:\\s*"([^"]*)"');
+    const m = body.match(re);
+    if (m) result[key] = m[1];
+  }
+  if (Object.keys(result).length > 0) return result;
+  return null;
+}
+
 // ===== モデルフォールバック機能 =====
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
@@ -458,29 +483,8 @@ async function analyze() {
     });
     const raw = (data.candidates?.[0]?.content?.parts || []).map(p => p.text||'').join('');
     if (!raw) throw new Error('AIからの応答が空でした');
-    let card;
-    // 1. そのままJSON.parse
-    try { card = JSON.parse(raw); }
-    catch(e1) {
-      // 2. {...}部分を抽出
-      const s = raw.indexOf('{'), end = raw.lastIndexOf('}');
-      if (s > -1 && end > s) {
-        try { card = JSON.parse(raw.slice(s, end+1)); }
-        catch(e2) {
-          // 3. ```json ... ``` ブロックを除去してから再試行
-          let cleaned = raw.replace(/```json\s*/g, '').replace(/```/g, '').trim();
-          const s2 = cleaned.indexOf('{'), e2x = cleaned.lastIndexOf('}');
-          if (s2 > -1 && e2x > s2) {
-            try { card = JSON.parse(cleaned.slice(s2, e2x+1)); }
-            catch(e3) { throw new Error('JSON解析失敗。AI応答: ' + raw.slice(0,150)); }
-          } else {
-            throw new Error('JSON形式が見つからない。AI応答: ' + raw.slice(0,150));
-          }
-        }
-      } else {
-        throw new Error('JSON形式が見つからない。AI応答: ' + raw.slice(0,150));
-      }
-    }
+    const card = tryParseJsonLoose(raw);
+    if (!card || !card.name) throw new Error('解析失敗。AI応答: ' + raw.slice(0, 200));
     analyzedCard = { ...card, imageData: selectedB64, imageMime: mediaType, registeredAt: new Date().toISOString() };
     showResult(card);
     showMsg('scan-msg', '✅ 解析完了！価格検索中...', 'info');
@@ -522,22 +526,8 @@ async function analyzeOneCard(file, b64, mediaType) {
   });
   const raw = (data.candidates?.[0]?.content?.parts || []).map(p => p.text||'').join('');
   if (!raw) throw new Error('AI応答が空');
-  let card;
-  try { card = JSON.parse(raw); }
-  catch(e1) {
-    const s = raw.indexOf('{'), end = raw.lastIndexOf('}');
-    if (s > -1 && end > s) {
-      try { card = JSON.parse(raw.slice(s, end+1)); }
-      catch(e2) {
-        let cleaned = raw.replace(/```json\s*/g, '').replace(/```/g, '').trim();
-        const s2 = cleaned.indexOf('{'), e2x = cleaned.lastIndexOf('}');
-        if (s2 > -1 && e2x > s2) {
-          try { card = JSON.parse(cleaned.slice(s2, e2x+1)); }
-          catch(e3) { throw new Error('JSON解析失敗'); }
-        } else throw new Error('JSON形式が見つからない');
-      }
-    } else throw new Error('JSON形式が見つからない');
-  }
+  const card = tryParseJsonLoose(raw);
+  if (!card || !card.name) throw new Error('解析失敗');
   return card;
 }
 
